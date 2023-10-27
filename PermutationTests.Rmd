@@ -1,0 +1,176 @@
+---
+title: "ReadingInData"
+output: pdf_document
+date: "2023-02-04"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,eval=FALSE)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(Rfast)
+library(stats)
+```
+
+```{r}
+# Load the previously generated data
+load("./bikedata.RData") 
+```
+
+# Permutation Tests
+
+```{r}
+# Create dataframe of all the data
+bike_df = as.data.frame(starttime)
+bike_df$duration = duration
+bike_df$station_start = station_start
+bike_df$station_end = station_end
+bike_df$bike_num = bikenum
+bike_df$member = member
+bike_df$days_since_Jan1_2010 = days_since_Jan1_2010
+bike_df$day_of_week = day_of_week
+
+convert_to_route = function(x) {
+  paste("r",as.character(x),sep="")
+}
+
+bike_df$route = paste(lapply(station_end,convert_to_route),lapply(station_start,as.character), sep="_")
+bike_df$is_weekday = (bike_df$day_of_week != "Saturday") & (bike_df$day_of_week != "Sunday")
+
+names(bike_df)[names(bike_df) == 'V1'] <- 'Year'
+names(bike_df)[names(bike_df) == 'V2'] <- 'Month'
+names(bike_df)[names(bike_df) == 'V3'] <- 'Day'
+names(bike_df)[names(bike_df) == 'V4'] <- 'Hour'
+names(bike_df)[names(bike_df) == 'V5'] <- 'Minute'
+names(bike_df)[names(bike_df) == 'V6'] <- 'Second'
+
+# Is it rush hour?
+# Let's define rush hour as 7-9 am and 5-7 pm
+# This corresponds to hours 7-9 and 17-19
+bike_df$rush_hour = bike_df$Hour %in% c(7,8,9,17,18,19)
+
+#Season
+bike_df$Month = as.factor(bike_df$Month)
+bike_df$season = revalue(bike_df$Month, c("1"="Winter", "2"="Winter","3"="Spring","4"="Spring","5"="Spring","6"="Summer","7"="Summer","8"="Summer","9"="Fall","10"="Fall","11"="Fall","12"="Winter"))
+```
+
+To determine changes in each route, we started by conducting a permutation test for each route. First, we selected only routes with over 100 data points. We do not think we would get any reliable changes in the routes with too few data points. We think it is also more computationally feasible to run. If we only choose routes that have more than 100 rides, it will cover 86.7% of the original data points.
+
+The test statistic we used is the correlation between the days since Jan 2010 and the duration of the bike ride. We first try this without any confounders and only look at the relationship between the days and the duration. We run 10000 permutations and calculate a p-value for each route. Since we are comparing the p-values for multiple routes, we chose to use the Benjamini-Hochberg procedure to determine the routes which may have a significant change over the time period. We chose Benjamini-Hochberg over the Holm-Bonferroni procedure because with over 6000 routes, we expect Holm-Bonferroni would be too conservative and it would be difficult to reject any p-values since we also only run 10000 permutations. This ends up rejecting INSET NUMBER of routes as having changes over the time period.
+
+We also tried accounting for confounders that had appeared significant in the initial data analysis. These included whether the individual taking the trip was a member, whether the trip was taken on a weekday or weekend, and what season the trip was taken in (Winter, Spring, Summer, or Fall). The season condition was included as a granular test for the weather that the route was taken in; quite intuitively the initial visualizations showed that trips took longer in Winter (likely due to snow and cold slowing bikers down). This resulted in a total of 16 sets of distinct combinations of confounders for 16 sets of confounder groups per route. We then permuted within each of these sets of confounder groups within each route to see if any of the confounder groups had a greater correlation between days since January 2010 and route duration than would be suggested by the null. This corresponded to the null that there were no changes in route durations for any of the confounder groups for any of the routes. We then counted a route as displaying a significant change in route duration over time if any of the subpopulations within the route displayed a significant p-value after conducting a BH adjustment on the entire set of p-values. One issue with this approach is that it does not control the primary FDR we aim to control (the FDR in terms of routes). One approach that could be applied in further work to solve this issue would be to permute within each of the groups but then only calculate one p-value for each route based on the permuted days (that were only permuted within each of the confounding groups).
+
+```{r}
+# Get p-values for each route without confounders and run 
+
+route_count = as.data.frame(table(bike_df$route))
+usable = unique(as.character(route_count$Var1[route_count$Freq >= 1000]))
+p_values = rep(0,length(usable))
+
+for (route in usable) {
+  route_df = bike_df[bike_df$route == route,]
+  b_data = cor(log(route_df$duration),route_df$days_since_Jan1_2010)
+  unshuffled_routes = matrix(rep(route_df$days_since_Jan1_2010,10000), ncol=10000)
+  shuffled_routes = colShuffle(unshuffled_routes)
+  correlations = cor(log(route_df$duration), shuffled_routes)
+  #p_values = c(p_values, (1+sum(abs(correlations)>=abs(b_data)))/(1+length(correlations)))
+  p_values[usable == route] = (1+sum(abs(correlations)>=abs(b_data)))/(1+length(correlations))
+}
+
+save(p_values, file = "no_confounder_p_values_100.rda")
+
+sum(p.adjust(p_values,method="holm") < 0.05)
+sum(p.adjust(p_values,method="BH") < 0.05)
+```
+
+```{r}
+# Get p-values for each route with confounders 
+p_values = c()
+
+# Subset the routes to those with over 100 trips per route
+route_count = as.data.frame(table(bike_df$route))
+usable = unique(as.character(route_count$Var1[route_count$Freq >= 100]))
+
+for (route in usable) {
+  for (membership_status in c(TRUE,FALSE)) {
+    for (weekday in c(TRUE,FALSE)) {
+      for (in_season in c("Winter","Spring","Summer","Fall")) {
+        route_df = bike_df[(bike_df$route == route) & 
+                           (bike_df$member == membership_status) & 
+                           (bike_df$is_weekday == weekday) & 
+                           (bike_df$season == in_season),]
+        
+        # To speed up calculations, generate all the shuffled routes at once and calculate
+        # their correlations at the same time
+        b_data = cor(route_df$duration,route_df$days_since_Jan1_2010)
+        unshuffled_routes = matrix(rep(route_df$days_since_Jan1_2010,10000), ncol=10000)
+        shuffled_routes = colShuffle(unshuffled_routes)
+        correlations = cor(route_df$duration, shuffled_routes)
+        p_values = c(p_values, (1+sum(abs(correlations)>=abs(b_data)))/(1+length(correlations)))
+      }
+    }
+  }
+}
+
+save(p_values, file = "real_confounder_p_values_1000.rda")
+print(p_values[1:100])
+```
+
+```{r}
+# Get p-values for each route with confounders 
+p_values = c()
+
+route_count = as.data.frame(table(bike_df$route))
+usable = unique(as.character(route_count$Var1[route_count$Freq > 1000]))
+
+for (route in usable) {
+  for (membership_status in c(TRUE,FALSE)) {
+    for (weekday in c(TRUE,FALSE)) {
+      for (rush_hour in c(TRUE,FALSE)) {
+        route_df = bike_df[(bike_df$route == route) & 
+                           (bike_df$member == membership_status) & 
+                           (bike_df$is_weekday == weekday) & 
+                           (bike_df$rush_hour == rush_hour),]
+        b_data = cor(route_df$duration,route_df$days_since_Jan1_2010)
+        unshuffled_routes = matrix(rep(route_df$days_since_Jan1_2010,10000), ncol=10000)
+        shuffled_routes = colShuffle(unshuffled_routes)
+        correlations = cor(route_df$duration, shuffled_routes)
+        p_values = c(p_values, (1+sum(abs(correlations)>=abs(b_data)))/(1+length(correlations)))
+      }
+    }
+  }
+}
+
+save(p_values, file = "rush_hour_real_confounder_p_values_1000.rda")
+print(p_values[1:100])
+```
+
+```{r}
+p_values = c()
+
+route_count = as.data.frame(table(bike_df$route))
+usable = unique(as.character(route_count$Var1[route_count$Freq > 100]))
+
+for (route in usable) {
+  for (membership_status in c(TRUE,FALSE)) {
+    for (weekday in c(TRUE,FALSE)) {
+      for (rush_hour in c(TRUE,FALSE)) {
+        route_df = bike_df[(bike_df$route == route) & 
+                           (bike_df$member == membership_status) & 
+                           (bike_df$is_weekday == weekday) & 
+                           (bike_df$rush_hour == rush_hour),]
+        b_data = cor(route_df$duration,route_df$days_since_Jan1_2010)
+        unshuffled_routes = matrix(rep(route_df$days_since_Jan1_2010,1000), ncol=1000)
+        shuffled_routes = colShuffle(unshuffled_routes)
+        correlations = cor(route_df$duration, shuffled_routes)
+        p_values = c(p_values, (1+sum(abs(correlations)>=abs(b_data)))/(1+length(correlations)))
+      }
+    }
+  }
+}
+
+sum(p.adjust(p_values,method="BH") < 0.05)
+save(p_values, file = "greater_100_1000_permutations_confounders.rda")
+```
+

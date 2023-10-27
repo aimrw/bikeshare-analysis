@@ -1,0 +1,132 @@
+---
+title: "BH functions"
+author: "Xinmeng Zhang"
+date: "2023-02-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Regular BH
+```{r}
+regular_BH = function(p, alpha) {
+  n <- length(p)
+  k <- 1:n
+  idx = order(p)
+  reject <- ifelse(p[idx] <= alpha * (k / n), TRUE, FALSE)
+  k <- max(which(reject == TRUE))
+  if (k == -Inf) {
+    return("No signals")
+  } else {
+    reject[1:k] <- TRUE
+    reject = reject[order(p)]
+    return(reject)
+  }
+}
+```
+
+Modified BH
+```{r}
+# general modified BH method for each group
+modified_BH = function(P, alpha, gamma){
+    n = length(P)
+    order_index = order(P, decreasing=FALSE)
+    pi_hat = sum(P>gamma)/n/(1-gamma)
+    P[P>gamma] = Inf   # never reject any p > gamma
+    ks = which(P[order_index] <= (1:n)*alpha/n/pi_hat)
+    if(length(ks)==0){
+        return(NULL)
+    }else{
+        k = max(ks)
+        rej_index = order_index[1:k]
+        return(rej_index)
+    }
+}
+```
+
+
+```{r}
+# group adaptive BH function
+group_adaptive_BH = function(P, group_sizes, alpha, gamma) {
+    n = length(P)
+    K = length(group_sizes)
+    rej_index = NULL
+    inx = 1
+    for (k in 1:K) {
+        group_rej_index = modified_BH(P[inx:(inx+group_sizes[k]-1)], alpha, gamma)
+        rej_index = c(rej_index, c(inx:(inx+group_sizes[k]-1))[group_rej_index])
+        inx = inx + group_sizes[k]
+    }
+    return(rej_index)
+}
+```
+
+```{r}
+# Group adaptive BH with groups being the starting station
+groups = gsub('_.{5}', '', usable)
+group_adaptive_BH_startingstation <- function(P,groups,alpha,gamma) {
+  n = length(P)
+  pval = split(p_values, groups)
+  pi = 1:length(groups)
+  for (i in 1:length(pval)) {
+    pi[groups == names(pval)[i]] = length(pval[[i]][pval[[i]] > gamma]) / (length(pval[[i]])*(1-gamma))
+  }
+  p_tilda <- pi * P
+  p_tilda[P > gamma] <- P[P > gamma] + Inf
+  k <- 1:n
+  reject <- ifelse(sort(p_tilda) <= alpha * (k / n), TRUE, FALSE)
+  k <- max(which(reject == TRUE))
+  reject[1:k] <- TRUE
+  reject = reject[order(p_tilda)]
+  return(reject)
+}
+```
+
+```{r}
+# After doing BH procedure, route rejections for confounders
+confounder_adjustment = function(P, alpha, confounder_group_size) {
+  P[is.na(P)] = 1
+  l = length(P) / confounder_group_size
+  #total_rejections = regular_BH(P, alpha)
+  total_rejections = (p.adjust(p_values,method="BH") < 0.05)
+  split_rejections = split(total_rejections, rep(1:l, each=confounder_group_size))
+  route_rejections = rep(FALSE, l)
+  for (i in 1:l) {
+    if (TRUE %in% split_rejections[[i]]) {
+        route_rejections[i] = TRUE
+    }
+    else {
+        route_rejections[i] = FALSE
+    }
+  }
+  return(route_rejections)
+}
+confounder_adjustment(p_values, 0.05, 8)
+
+# (route in confounder_route_rejected) {
+#    route_df = bike_df[bike_df$route == route,]
+#    plot(route_df$days_since_Jan1_2010, route_df$duration, 
+#         xlab="days since Jan1 2020", ylab="duration")
+#}
+```
+
+```{r}
+p_values[is.na(p_values)] = 1
+l = length(p_values) / 8
+total_rejections = regular_BH(p_values, 0.05)
+#total_rejections = (p.adjust(p_values,method="BH") < 0.05)
+split_rejections = split(total_rejections, rep(1:155, each=8))
+route_rejections = rep(FALSE, length(usable))
+for (i in 1:length(usable)) {
+  if (TRUE %in% split_rejections[[i]]) {
+      route_rejections[i] = TRUE
+  }
+  else {
+    route_rejections[i] = FALSE
+  }
+}
+
+#confounder_adjustment(total_rejections, 8)
+```

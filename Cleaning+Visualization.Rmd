@@ -1,0 +1,182 @@
+---
+title: "Project 1: Capital Bikeshare Analysis"
+output: pdf_document
+author: Soren Dunn, Tytus Wilam, Aim Wonghirundacha, and Simone Zhang
+date: "2023-02-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,cache=TRUE,warning=FALSE,message = FALSE, fig.height=4, fig.align="center", out.width=c('90%', '90%'))
+library(ggplot2)
+library(dplyr)
+library(plyr)
+```
+
+```{r, include = FALSE,eval=FALSE}
+data = NULL
+
+for(i in 2010:2011){ # the data goes up to 2017, but the files are extremely large from 2011 onwards - you can decide to just use a subset
+	file = paste0('https://s3.amazonaws.com/capitalbikeshare-data/',i,'-capitalbikeshare-tripdata.zip')
+	download.file(file,destfile='bikedata.zip')
+	unzip('bikedata.zip')
+	data = rbind(data,read.csv(paste0(i,'-capitalbikeshare-tripdata.csv')))
+}
+
+n = dim(data)[1]
+
+starttime = as.numeric(strsplit(toString(data[,2]),split='[-:, ]')[[1]][-7*(1:n)]) # start time of ride #i
+dim(starttime) = c(6,n); starttime = t(starttime) # row i = year/month/date/hour/minute/second for ride #i
+duration = data[,1] # duration of the ride in seconds
+station_start = data[,4] # station ID where the bike was checked out
+station_end = data[,6] # station ID where the bike was returned
+member = (data[,9]=='Member') # member (1) or nonmember (0)
+
+
+bikenum =  as.numeric((strsplit(toString(data[,8]),'[?wW, ]')[[1]][3*(1:n)-1]))
+# some are NA, the data is messy for this one
+
+stations = NULL # stations[i,1] = station ID for the i-th station, stations[i,2] = station location for the i-th station
+for(i in unique(c(station_start,station_end))){
+	if(any(data[,4]==i)){
+		ind = min(which(data[,4]==i))
+		location = toString(data[ind,5])
+	}else{
+		ind = min(which(data[,6]==i))
+		location = toString(data[ind,7])
+	}
+	stations = rbind(stations,c(i,location))
+}
+# note that stations get added to the program over time
+
+days_in_month = rep(c(31,28,31,30,31,30,31,31,30,31,30,31),2) # Jan 2010, ..., Dec 2011
+
+days_since_Jan1_2010 = (starttime[,1]-2010)*365 + cumsum(days_in_month)[starttime[,2]] -
+		days_in_month[starttime[,2]] + (starttime[,3]-1)
+day_of_week = c('Monday','Tuesday','Wednesday','Thursday','Friday',
+	'Saturday','Sunday')[(days_since_Jan1_2010 + 4)%% 7 + 1]
+
+save('starttime','duration','bikenum','stations','station_start','station_end','member','days_since_Jan1_2010','day_of_week',file='bikedata.RData')
+```
+
+```{r include=FALSE}
+# Load the previously generated data
+load("./bikedata.RData") 
+```
+
+```{r,include=FALSE}
+# Create dataframe of all the data
+bike_df = as.data.frame(starttime)
+bike_df$duration = duration
+bike_df$station_start = station_start
+bike_df$station_end = station_end
+bike_df$bike_num = bikenum
+bike_df$member = member
+bike_df$days_since_Jan1_2010 = days_since_Jan1_2010
+bike_df$day_of_week = day_of_week
+
+# Define a function to help convert the start and end points to a properly formatted
+# route character string
+convert_to_route = function(x) {
+  paste("r",as.character(x),sep="")
+}
+
+# Create a unique variable which is different for each route (each combination of start and end points)
+bike_df$route = paste(lapply(station_end,convert_to_route),lapply(station_start,as.character), sep="_")
+bike_df$is_weekday = (bike_df$day_of_week != "Saturday") & (bike_df$day_of_week != "Sunday")
+
+# Rename the original variable names to more descriptive ones
+names(bike_df)[names(bike_df) == 'V1'] <- 'Year'
+names(bike_df)[names(bike_df) == 'V2'] <- 'Month'
+names(bike_df)[names(bike_df) == 'V3'] <- 'Day'
+names(bike_df)[names(bike_df) == 'V4'] <- 'Hour'
+names(bike_df)[names(bike_df) == 'V5'] <- 'Minute'
+names(bike_df)[names(bike_df) == 'V6'] <- 'Second'
+
+# Identify the trips that occurred during rush hour
+# Let's define rush hour as 7-9 am and 5-7 pm
+# This corresponds to hours 7-9 and 17-19
+bike_df$rush_hour = bike_df$Hour %in% c(7,8,9,17,18,19)
+
+# Define new factor levels for each season.
+bike_df$Month = as.factor(bike_df$Month)
+bike_df$season = revalue(bike_df$Month, c("1"="Winter", "2"="Winter","3"="Spring","4"="Spring","5"="Spring","6"="Summer","7"="Summer","8"="Summer","9"="Fall","10"="Fall","11"="Fall","12"="Winter"))
+
+head(bike_df)
+```
+
+# Background and Introduction
+
+In this project, we deal with the public data set from Washington D.C.’s bikeshare program, which records every individual ride taken. The analysis on the patterns of change of riding time of routes and identification on routes that have significant change is meaningful. For example, the government get to learn whether the infrastructure such as bridge or road built over time actually benefit people as providing convenience for commuting. Moreover, other topics such as cost and benefit analysis can also be discussed further with the combination of extra data sets.
+
+We aim to find whether the duration time of each route changes over time controlling for possible confounders such as rush hour, membership, season and weekdays. To achieve this goal, we've constructed task specific permutation tests to check for the correlation between a route's duration and time. We've built linear regression models to test on the significance of time. At the same time, addressing the multiple testing issue by applying modified BH.
+
+# Basic Data Exploration
+
+```{r}
+# Check the basic route distribution
+log_trip_durations = log10(bike_df$duration)
+hist(log_trip_durations)
+sum = summary(bike_df$duration)
+total = sum(bike_df$duration > 0)
+over_4 = sum(bike_df$duration > 60 * 60 * 4)
+over_12 = sum(bike_df$duration > 60 * 60 * 12)
+over_24 = sum(bike_df$duration > 60 * 60 * 24)
+```
+
+To better understand the Capital Bikeshare dataset we first investigated some basic properties of the dataset. It has data from 1,342,364 trips out of which 5,251 lasted more than 4 hours, 951 more than 12 hours, and none lasted more than 24 hours. As seen above, this still results in a distribution of ride times that spans almost 3 orders of magnitude. Due to the large span of the duration times, we chose to use log(duration) over pure duration for many of our regressions and visualizations to reduce the skew of the data (which makes visualizations more clear).
+
+```{r}
+# Count the number of times each unique route was taken
+times_taken = t(rbind(table(bike_df$route)))
+route_counts = data.frame(times_taken)
+route_counts$route <- rownames(route_counts)
+
+hist(log10(route_counts$times_taken))
+routes_taken_20 = sum(route_counts$times_taken < 20)
+routes_taken_100 = sum(route_counts$times_taken > 100)
+routes_taken_1000 = sum(route_counts$times_taken > 1000)
+sum = summary(route_counts$times_taken)
+```
+The number of times each route was taken is also a very skewed distributions with around 6017 having been taken fewer than 20 times, around 3244 having been taken over a hundred times, and 155 of the routes having been taken over a thousand times. This skew can also be seen in the histogram of the number of times different routes were taken with a log transform again being necessary to properly visualize the data.
+
+### Checking for useful confounders
+
+```{r}
+ggplot(data=bike_df, aes(x=member,y=log10(duration))) +
+  geom_boxplot() +
+  facet_wrap(~Year)
+```
+
+After these basic checks, we visualized the likely confounders for the route durations to select confounders to use for later permutation tests. We had to select from among the plausible confounders since subsetting the data into too many groups for the permutation tests would yield too little data fro the majority of the routes. First we simultaneously plotted boxplots by year and whether the bike rider was a member. Boxplots were chosen for this visualization since they nicely showed not just the median between each subset but also gave a clear visual way to distinguish between each subset's inter-quartile range. Based on this plot, whether the rider was a member seems like a more important confounder than the year.
+
+```{r}
+grouped_df = aggregate(cbind(duration,is_weekday) ~ days_since_Jan1_2010, data=bike_df, mean)
+ggplot(data=grouped_df, aes(x=days_since_Jan1_2010,y=duration,color=factor(is_weekday))) +
+  geom_point() +
+  ggtitle("Changes in Route Durations by Weekend/Weekday")
+```
+
+The changes in route durations over time were also visualized by whether the trip was taken on a weekday. The routes that were taken on weekends were persistently higher than weekdays. However the route durations do not seem to have a linear relationship with days since Janurary 2010. A likely explanation for this is that route durations dip during winter months and are longer during summer months. To check this we then visualized directly the differences between seperate seasons.
+
+```{r}
+ggplot(data=bike_df, aes(y=log10(duration))) +
+  geom_histogram(bins = 50) +
+  facet_wrap(~season)
+```
+
+Indeed the colder months appear to have slightly shorter route durations than warmer months. Thus we made sure to include season as a confounder for subsequent analysis.
+
+```{r}
+ggplot(data=bike_df, aes(y=log10(duration))) +
+  geom_boxplot() +
+  facet_wrap(~is_weekday)
+```
+As shown in the boxplot above, whether the trip happened on a weekday or weekend has a stark difference in the route duration and thus is another highly important confounder to test.
+
+```{r}
+ggplot(data=bike_df, aes(y=log10(duration))) +
+  geom_histogram() +
+  facet_wrap(~rush_hour)
+```
+
+Based on this plot, rush hour actually does not appear to be a significant confounder. For this reason, we do not account for whether the trip happened during rush hour in the subsequent analysis.

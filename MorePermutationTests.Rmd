@@ -1,0 +1,61 @@
+---
+title: "MorePermutationTests"
+output: pdf_document
+date: "2023-02-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(Rfast)
+library(stats)
+library(permuco)
+```
+
+```{r}
+# Load the previously generated data
+load("./bikedata.RData") 
+```
+
+# Additional Permutation Tests
+
+```{r}
+# Create dataframe of all the data
+bike_df = as.data.frame(starttime)
+bike_df$duration = duration
+bike_df$station_start = station_start
+bike_df$station_end = station_end
+bike_df$bike_num = bikenum
+bike_df$member = member
+bike_df$days_since_Jan1_2010 = days_since_Jan1_2010
+bike_df$day_of_week = day_of_week
+
+convert_to_route = function(x) {
+  paste("r",as.character(x),sep="")
+}
+
+bike_df$route = paste(lapply(station_end,convert_to_route),lapply(station_start,as.character), sep="_")
+bike_df$is_weekday = (bike_df$day_of_week != "Saturday") & (bike_df$day_of_week != "Sunday")
+
+names(bike_df)[names(bike_df) == 'V1'] <- 'Year'
+names(bike_df)[names(bike_df) == 'V2'] <- 'Month'
+names(bike_df)[names(bike_df) == 'V3'] <- 'Day'
+names(bike_df)[names(bike_df) == 'V4'] <- 'Hour'
+names(bike_df)[names(bike_df) == 'V5'] <- 'Minute'
+names(bike_df)[names(bike_df) == 'V6'] <- 'Second'
+
+# Identify the trips that occurred during rush hour
+# Let's define rush hour as 7-9 am and 5-7 pm
+# This corresponds to hours 7-9 and 17-19
+bike_df$rush_hour = bike_df$Hour %in% c(7,8,9,17,18,19)
+
+#Season
+bike_df$Month = as.factor(bike_df$Month)
+bike_df$season = revalue(bike_df$Month, c("1"="Winter", "2"="Winter","3"="Spring","4"="Spring","5"="Spring","6"="Summer","7"="Summer","8"="Summer","9"="Fall","10"="Fall","11"="Fall","12"="Winter"))
+```
+
+Outside of the methods attempted here there is a whole literature on different methods for controlling for confounders with permutation tests in regressions that we did not have time to implement. One of these is the conditional randomization test proposed by Candes et al (2). If the conditional distribution of the independent variable given the confounders is known (which is often the case with large amounts of observational data) their procedure suggests sampling a new copy of the dataset X values from that distribution. This distribution should be equal to the original distribution under the null. Berrett et al (3) present a further variation on this approach where the permuted independent variables are computed as above but add the constraint that each of the generated vectors of independent variables must be a permutation of the original vector of independent variables. 
+
+Frossard et al. (4) also implemented a variety of permutation strategies for linear models in an r package. Their default method involves first fitting a linear regression with only the confounding variables, permuting that models residuals, and adding those residuals to the fitted y values. This procedure is intended to approximate permuting the y values. We would have experimented with applying these methods as well given additional time. One drawback of these linear methods however is that they heavily rely on linear modeling assumptions and are as a rule approximate and with various other drawbacks specific to each particular method. 

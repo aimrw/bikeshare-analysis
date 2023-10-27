@@ -1,0 +1,365 @@
+---
+title: "Untitled"
+output: pdf_document
+date: "2023-02-04"
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+```
+
+```{r}
+load("./bikedata.RData")
+bike_df = as.data.frame(starttime)
+bike_df$duration = duration
+bike_df$station_start = station_start
+bike_df$station_end = station_end
+bike_df$bike_num = bikenum
+bike_df$member = member
+bike_df$days_since_Jan1_2010 = days_since_Jan1_2010
+bike_df$day_of_week = day_of_week
+bike_df$route = paste(lapply(station_end,as.character),lapply(station_start,as.character), sep="->")
+bike_df$is_weekday = (bike_df$day_of_week != "Saturday") & (bike_df$day_of_week != "Sunday")
+```
+
+```{r}
+route_count = as.data.frame(table(bike_df$route))
+usable = as.data.frame(unique(as.character(route_count$Var1[route_count$Freq > 1000])))
+colnames(usable) = c("route")
+#pvalue = rep(0,length(usable$route))
+
+for (i in 1:length(usable$route)) {
+  #r = bike_df[bike_df$route == usable$route[i],] 
+  r = usable$route[i]
+  dur = bike_df$duration[which(bike_df$route %in% r)]
+  days = bike_df$days_since_Jan1_2010[which(bike_df$route %in% r)]
+  #model = lm(duration ~ days_since_Jan1_2010, data=r)
+  model = lm(dur ~ days)
+  usable$pvalue[i] = summary(model)$coeff[2, 4]
+  usable$coeff[i] = summary(model)$coeff[2, 1]
+}
+significant = usable[usable$pvalue < 0.05,]
+```
+
+```{r}
+temp = "r31011_31011"
+route_df = bike_df[bike_df$route == temp,]
+for (i in c(1:500)) {
+     route_shuffled=transform(route_df, days_since_Jan1_2010 = sample(days_since_Jan1_2010))
+     shuffled_lm = lm(log(duration) ~ days_since_Jan1_2010,data=route_shuffled)
+     b = shuffled_lm$coefficients[2]
+     b_sim = c(b_sim, b)
+}
+
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(dplyr)
+```
+
+```{r}
+# Load the previously generated data
+load("./bikedata.RData") 
+```
+
+```{r}
+# Create dataframe of all the data
+bike_df = as.data.frame(starttime)
+bike_df$duration = duration
+bike_df$station_start = station_start
+bike_df$station_end = station_end
+bike_df$bike_num = bikenum
+bike_df$member = member
+bike_df$days_since_Jan1_2010 = days_since_Jan1_2010
+bike_df$day_of_week = day_of_week
+
+convert_to_route = function(x) {
+  paste("r",as.character(x),sep="")
+}
+
+bike_df$route = paste(lapply(station_end,convert_to_route),lapply(station_start,as.character), sep="_")
+bike_df$is_weekday = (bike_df$day_of_week != "Saturday") & (bike_df$day_of_week != "Sunday")
+
+names(bike_df)[names(bike_df) == 'V1'] <- 'Year'
+names(bike_df)[names(bike_df) == 'V2'] <- 'Month'
+names(bike_df)[names(bike_df) == 'V3'] <- 'Day'
+names(bike_df)[names(bike_df) == 'V4'] <- 'Hour'
+names(bike_df)[names(bike_df) == 'V5'] <- 'Minute'
+names(bike_df)[names(bike_df) == 'V6'] <- 'Second'
+
+#Season
+bike_df$Month = as.factor(bike_df$Month)
+bike_df$season = revalue(bike_df$Month, c("1"="Winter", "2"="Winter","3"="Spring","4"="Spring","5"="Spring","6"="Summer","7"="Summer","8"="Summer","9"="Fall","10"="Fall","11"="Fall","12"="Winter"))
+
+head(bike_df,50)
+lm(log(duration) ~ days_since_Jan1_2010,data=bike_df[bike_df$route == "r31108_31208",])$coefficients[2]
+dim(bike_df[bike_df$route == "r31011_31011",])
+```
+
+```{r}
+confounder_permutation = function(subset_df) {
+  for (i in c(1:500)) {
+     route_shuffled=transform(route_df, days_since_Jan1_2010 = sample(days_since_Jan1_2010))
+     shuffled_lm = lm(log(duration) ~ days_since_Jan1_2010,data=route_shuffled)
+     b = shuffled_lm$coefficients[2]
+     b_sim = c(b_sim, b)
+  }
+}
+```
+
+```{r}
+route_count = as.data.frame(table(bike_df$route))
+usable = as.data.frame(unique(as.character(route_count$Var1[route_count$Freq > 1000])))
+colnames(usable) = c("route")
+#member_p_values
+p_values = c()
+
+# The first route should be significant but the second one shouldn't be
+# The first route had an increase of 0.001235668 while the second had a decrease
+# of -3.39763e-05 in the base data
+for (route in usable$route) {
+  route_df = bike_df[bike_df$route == route,]
+  base_lm = lm(log(duration) ~ days_since_Jan1_2010,data=route_df)
+  b_data = base_lm$coefficients[2]
+  b_sim = c()
+  for (i in c(1:500)) {
+     route_shuffled=transform(route_df, days_since_Jan1_2010 = sample(days_since_Jan1_2010))
+     shuffled_lm = lm(log(duration) ~ days_since_Jan1_2010,data=route_shuffled)
+     b = shuffled_lm$coefficients[2]
+     b_sim = c(b_sim, b)
+  }
+  p_values = c(p_values, (1+sum(b_sim>=b_data))/(1+length(b_sim)))
+  
+}
+print(p_values)
+significant = p_values[p_values < 0.05/length(p_values)]
+sig_routes = usable$route[p_values < 0.05]
+```
+
+```{r}
+P = p_values
+alpha = 0.05
+n <- length(P)
+k <- 1:n
+reject <- ifelse(sort(P) <= alpha * (k / n), TRUE, FALSE)
+k <- max(which(reject == TRUE))
+if (k == -Inf) {
+  print("No signals")
+} else {
+  reject[1:k] <- TRUE
+  print(reject)
+  print(sum(reject))
+}
+```
+
+```{r}
+for (membership_status in c(TRUE,FALSE)) {
+ print(membership_status) 
+}
+```
+
+```{r}
+# Creating the row names for the dataframe
+route_count1 = as.data.frame(table(bike_df$route))
+usable1 = as.data.frame(unique(as.character(route_count$Var1[route_count$Freq > 1000])))
+colnames(usable1) = c("route")
+
+row_names = c()
+for (membership_status in c(TRUE,FALSE)) {
+  for (weekday in c(TRUE,FALSE)) {
+    for (in_season in c("Winter","Spring","Summer","Fall")) {
+      row_name = paste(as.character(membership_status),as.character(weekday),sep="_")
+      row_name = paste(row_name,in_season,sep="_")
+      row_names = c(row_names,row_name)
+    }
+  }
+}
+
+p_values1 = data.frame(row_names)
+
+# Testing first on two routes to see if the code works
+for (route in usable1$route) {
+  route_df = bike_df[bike_df$route == route,]
+  base_lm = lm(log(duration) ~ days_since_Jan1_2010,data=route_df)
+  b_data = base_lm$coefficients[2]
+  p_vals = c()
+  for (membership_status in c(TRUE,FALSE)) {
+    for (weekday in c(TRUE,FALSE)) {
+      for (in_season in c("Winter","Spring","Summer","Fall")) {
+        subset_df = route_df[(route_df$member == membership_status) & 
+                              (route_df$is_weekday == weekday) & 
+                              (route_df$season == in_season),]
+          base_lm = lm(log(duration) ~ days_since_Jan1_2010,data=route_df)
+          b_data = base_lm$coefficients[2]
+          b_sim = c()
+          for (i in c(1:500)) {
+            route_shuffled=transform(route_df, days_since_Jan1_2010 = sample(days_since_Jan1_2010))
+            shuffled_lm = lm(log(duration) ~ days_since_Jan1_2010,data=route_shuffled)
+            b = shuffled_lm$coefficients[2]
+            b_sim = c(b_sim, b)
+          }
+          p_vals = c(p_vals, (1+sum(b_sim>=abs(b_data)))/(1+length(b_sim)))
+      }
+    }
+  }
+  
+  p_values1[route] = p_vals
+  
+}
+print(p_values1)
+```
+
+```{r}
+route_count = as.data.frame(table(bike_df$route))
+usable = as.data.frame(unique(as.character(route_count$Var1[route_count$Freq > 3000])))
+colnames(usable) = c("route")
+#member_p_values
+p_values2 = c()
+
+# The first route should be significant but the second one shouldn't be
+# The first route had an increase of 0.001235668 while the second had a decrease
+# of -3.39763e-05 in the base data
+for (route in usable$route) {
+  route_df = bike_df[bike_df$route == route,]
+  #base_lm = lm(log(duration) ~ days_since_Jan1_2010,data=route_df)
+  b_data = cor(route_df$duration, route_df$days_since_Jan1_2010)
+  #b_data = base_lm$coefficients[2]
+  b_sim = c()
+  for (i in c(1:500)) {
+     route_shuffled=transform(route_df, days_since_Jan1_2010 = sample(days_since_Jan1_2010))
+     #shuffled_lm = lm(log(duration) ~ days_since_Jan1_2010,data=route_shuffled)
+     #b = shuffled_lm$coefficients[2]
+     b = cor(route_shuffled$duration, route_shuffled$days_since_Jan1_2010)
+     b_sim = c(b_sim, b)
+  }
+  p_values2 = c(p_values2, (1+sum(abs(b_sim)>=abs(b_data)))/(1+length(b_sim)))
+  
+}
+print(p_values2)
+#significant2 = p_values2[p_values2 < 0.05/length(p_values)]
+#sig_routes2 = usable$route[p_values2 < 0.05]
+plot("r31201_31200")
+plot(bike_df[bike_df$route == "r31201_31200",]$days_since_Jan1_2010, bike_df[bike_df$route == "r31201_31200",]$duration, ylim = c(0,1000))
+```
+
+```{r}
+#member_p_values
+p_values = c()
+# The first route should be significant but the second one shouldn't be
+# The first route had an increase of 0.001235668 while the second had a decrease
+# of -3.39763e-05 in the base data
+for (route in usable$route) {
+  route_df = bike_df[bike_df$route == route,] 
+  #base_lm = lm(duration ~ days_since_Jan1_2010,data=route_df)
+  #b_data = base_lm$coefficients[2]
+  b_data = abs(cor(route_df$days_since_Jan1_2010, route_df$duration))
+  b_sim = c()
+  for (i in c(1:500)) {
+     route_shuffled=transform(route_df, days_since_Jan1_2010 = sample(days_since_Jan1_2010))
+     #shuffled_lm = lm(duration ~ days_since_Jan1_2010,data=route_shuffled)
+     #b = shuffled_lm$coefficients[2]
+     b = abs(cor(route_shuffled$days_since_Jan1_2010, route_shuffled$duration))
+     b_sim = c(b_sim, b)
+  }
+  p_values = c(p_values, (1+sum(abs(b_sim)>=abs(b_data)))/(1+length(b_sim)))
+}
+print(p_values)
+```
+
+```{r}
+#member_p_values
+p_values = rep(0,length(usable$route))
+# The first route should be significant but the second one shouldn't be
+# The first route had an increase of 0.001235668 while the second had a decrease
+# of -3.39763e-05 in the base data
+for (i in 1:length(usable$route)) {
+  route = usable$route[i]
+  route_df = bike_df[bike_df$route == route,] 
+  #base_lm = lm(duration ~ days_since_Jan1_2010,data=route_df)
+  #b_data = base_lm$coefficients[2]
+  b_data = abs(cor(route_df$days_since_Jan1_2010, route_df$duration))
+  b_sim = rep(0,500)
+  for (j in c(1:500)) {
+     route_shuffled=transform(route_df, days_since_Jan1_2010 = sample(days_since_Jan1_2010))
+     #shuffled_lm = lm(duration ~ days_since_Jan1_2010,data=route_shuffled)
+     #b = shuffled_lm$coefficients[2]
+     b_sim[j] = abs(cor(route_shuffled$days_since_Jan1_2010, route_shuffled$duration))
+  }
+  p_values[i] = (1+sum(abs(b_sim)>=abs(b_data)))/(1+length(b_sim))
+  print(i)
+}
+print(p_values)
+```
+
+```{r}
+#member_p_values
+b_only = rep(0,length(usable$route))
+# The first route should be significant but the second one shouldn't be
+# The first route had an increase of 0.001235668 while the second had a decrease
+# of -3.39763e-05 in the base data
+for (i in 1:length(usable$route)) {
+  route = usable$route[i]
+  route_df = bike_df[bike_df$route == route,] 
+  #base_lm = lm(duration ~ days_since_Jan1_2010,data=route_df)
+  #b_data = base_lm$coefficients[2]
+  b_only[i] = abs(cor(route_df$days_since_Jan1_2010, route_df$duration))
+  #print(i)
+}
+print(b_only)
+```
+
+```{r}
+#member_p_values
+p_values = rep(0,length(selected_routes))
+# The first route should be significant but the second one shouldn't be
+# The first route had an increase of 0.001235668 while the second had a decrease
+# of -3.39763e-05 in the base data
+for (i in 1:length(selected_routes)) {
+  route = selected_routes[i]
+  route_df = bike_df[bike_df$route == route,] 
+  #base_lm = lm(duration ~ days_since_Jan1_2010,data=route_df)
+  #b_data = base_lm$coefficients[2]
+  b_data = abs(cor(route_df$days_since_Jan1_2010, route_df$duration))
+  b_sim = rep(0,10000)
+  for (j in c(1:10000)) {
+     route_shuffled=transform(route_df, days_since_Jan1_2010 = sample(days_since_Jan1_2010))
+     #shuffled_lm = lm(duration ~ days_since_Jan1_2010,data=route_shuffled)
+     #b = shuffled_lm$coefficients[2]
+     b_sim[j] = abs(cor(route_shuffled$days_since_Jan1_2010, route_shuffled$duration))
+  }
+  p_values[i] = (1+sum(abs(b_sim)>=abs(b_data)))/(1+length(b_sim))
+}
+print(p_values)
+```
+
+```{r}
+p_values = c()
+
+route_count = as.data.frame(table(bike_df$route))
+usable = unique(as.character(route_count$Var1[route_count$Freq > 1000]))
+
+for (route in usable) {
+  # get correlation for route
+  route_df = bike_df[bike_df$route == route,]
+  b_data = cor(route_df$duration,route_df$days_since_Jan1_2010)
+  shuffled_routes = c()
+  for (membership_status in c(TRUE,FALSE)) {
+    for (weekday in c(TRUE,FALSE)) {
+      for (rush_hour in c(TRUE,FALSE)) {
+        route_conf_df = bike_df[(bike_df$route == route) & 
+                           (bike_df$member == membership_status) & 
+                           (bike_df$is_weekday == weekday) & 
+                           (bike_df$rush_hour == rush_hour),]
+        unshuffled_routes = matrix(rep(route_conf_df$days_since_Jan1_2010,10000), ncol=10000)
+        shuffled_routes = c(shuffled_routes, colShuffle(unshuffled_routes))
+      }
+    }
+  }
+  shuffled_routes = 
+  correlations = cor(route_df$duration, shuffled_routes)
+  p_values = c(p_values, (1+sum(abs(correlations)>=abs(b_data)))/(1+length(correlations)))
+}
+```
+

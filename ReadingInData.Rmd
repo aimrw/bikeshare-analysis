@@ -1,0 +1,53 @@
+---
+title: "ReadingInData"
+output: pdf_document
+date: "2023-02-04"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(dplyr)
+library(plyr)
+```
+
+```{r}
+# Load the previously generated data
+load("./bikedata.RData") 
+```
+
+```{r}
+# Create dataframe of all the data
+bike_df = as.data.frame(starttime)
+bike_df$duration = duration
+bike_df$station_start = station_start
+bike_df$station_end = station_end
+bike_df$bike_num = bikenum
+bike_df$member = member
+bike_df$days_since_Jan1_2010 = days_since_Jan1_2010
+bike_df$day_of_week = day_of_week
+
+convert_to_route = function(x) {
+  paste("r",as.character(x),sep="")
+}
+
+bike_df$route = paste(lapply(station_end,convert_to_route),lapply(station_start,as.character), sep="_")
+bike_df$is_weekday = (bike_df$day_of_week != "Saturday") & (bike_df$day_of_week != "Sunday")
+
+names(bike_df)[names(bike_df) == 'V1'] <- 'Year'
+names(bike_df)[names(bike_df) == 'V2'] <- 'Month'
+names(bike_df)[names(bike_df) == 'V3'] <- 'Day'
+names(bike_df)[names(bike_df) == 'V4'] <- 'Hour'
+names(bike_df)[names(bike_df) == 'V5'] <- 'Minute'
+names(bike_df)[names(bike_df) == 'V6'] <- 'Second'
+
+# Is it rush hour?
+# Let's define rush hour as 7-9 am and 5-7 pm
+# This corresponds to hours 7-9 and 17-19
+bike_df$rush_hour = bike_df$Hour %in% c(7,8,9,17,18,19)
+
+#Season
+bike_df$Month = as.factor(bike_df$Month)
+bike_df$season = revalue(bike_df$Month, c("1"="Winter", "2"="Winter","3"="Spring","4"="Spring","5"="Spring","6"="Summer","7"="Summer","8"="Summer","9"="Fall","10"="Fall","11"="Fall","12"="Winter"))
+head(bike_df)
+```

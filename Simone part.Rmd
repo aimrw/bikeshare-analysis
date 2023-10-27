@@ -1,0 +1,260 @@
+---
+title: "Simone part of project 1"
+author: "Xinmeng Zhang"
+date: '2023-02-04'
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(dplyr)
+library(plyr)
+library(car)
+```
+
+```{r}
+# Load the previously generated data
+load("./bikedata.RData") 
+```
+
+
+# Background and Introduction
+
+In this project, we deal with the public data set from Washington D.C.’s bikeshare program, which records every individual ride taken. The analysis on the patterns of change of riding time of routes and identification on routes that have significant change is meaningful. For example, the government get to learn whether the infrastructure such as bridge or road built over time actually benefit people as providing convenience for commuting. Moreover, other topics such as cost and benefit analysis can also be discussed further with the combination of extra data sets.
+
+We aim to find whether the duration time of each route changes over time controlling for possible confounders such as rush hour, membership, season and weekdays. To achieve this goal, we've constructed task specific permutation tests to check for the correlation between a route's duration and time. We've built linear regression models to test on the significance of time. At the same time, addressing the multiple testing issue by applying modified BH.
+
+
+
+```{r}
+# Create dataframe of all the data
+bike_df = as.data.frame(starttime)
+bike_df$duration = duration
+bike_df$station_start = station_start
+bike_df$station_end = station_end
+bike_df$bike_num = bikenum
+bike_df$member = member
+bike_df$days_since_Jan1_2010 = days_since_Jan1_2010
+bike_df$day_of_week = day_of_week
+
+convert_to_route = function(x) {
+  paste("r",as.character(x),sep="")
+}
+
+bike_df$route = paste(lapply(station_end,convert_to_route),lapply(station_start,as.character), sep="_")
+bike_df$is_weekday = (bike_df$day_of_week != "Saturday") & (bike_df$day_of_week != "Sunday")
+
+names(bike_df)[names(bike_df) == 'V1'] <- 'Year'
+names(bike_df)[names(bike_df) == 'V2'] <- 'Month'
+names(bike_df)[names(bike_df) == 'V3'] <- 'Day'
+names(bike_df)[names(bike_df) == 'V4'] <- 'Hour'
+names(bike_df)[names(bike_df) == 'V5'] <- 'Minute'
+names(bike_df)[names(bike_df) == 'V6'] <- 'Second'
+
+# Is it rush hour?
+# Let's define rush hour as 7-9 am and 5-7 pm
+# This corresponds to hours 7-9 and 17-19
+bike_df$rush_hour = bike_df$Hour %in% c(7,8,9,17,18,19)
+
+#Season
+bike_df$Month = as.factor(bike_df$Month)
+bike_df$season = revalue(bike_df$Month, c("1"="Winter", "2"="Winter","3"="Spring","4"="Spring","5"="Spring","6"="Summer","7"="Summer","8"="Summer","9"="Fall","10"="Fall","11"="Fall","12"="Winter"))
+head(bike_df)
+```
+
+### Routes Selection
+As we organize the data, we observe that there are many routes only have very few rides taken over time as we can observe from the histogram below. From the reality point of view, the routes that are not usually used have less practical value for analysis, and also these routes are also not suitable for permutation tests.
+
+
+```{r}
+times_taken = t(rbind(table(bike_df$route)))
+route_counts = data.frame(times_taken)
+route_counts$route <- rownames(route_counts)
+route_more_than_100 <- route_counts %>% filter(times_taken >= 100)
+```
+
+
+```{r}
+hist(route_counts$times_taken, breaks=100, 
+     main = "Histogram of rides taken of routes", xlab="rides taken")
+```
+
+
+
+If we choose routes that have more than 100 rides, it will cover 86.7% of the original datapoints and most of the data points get to be keeped with this cutoff.
+
+```{r}
+data_by_route = bike_df[bike_df$route %in% route_more_than_100$route, ]
+nrow(data_by_route) / nrow(bike_df)
+```
+
+# Linear Regression
+
+Besides permutation test to see whether the correlation signal is significant after permutation, another way to examine the duration over time is through linear regression method. By applying linear regression on each route, we can examine whether the $\hat\beta 's$ on days_since_Jan1_2020 are significant or not. If one route has increasing / decreasing trend on its duration over time, the coefficient on days would be significant.
+
+
+### Linear model assumption check
+
+Since we want to use linear regression, we should first check if the linear assumption hold, for our inference on the $\hat \beta$ to be valid.
+
+The best way to check linear assumptions is to look at the residual plot and Q-Q plot. However, since there are too many routes and thus too many linear regression models to be checked, let's just look at the graphs of one representative route that has enough rides. We will then use the nvcTest() command to check for non-constant variance and use modified BH method to correct for the multiple testing issue. 
+
+
+#### Checking linear assumptions for a single route.
+
+```{r}
+data_single_route <- bike_df[bike_df$route == "r31011_31011",]
+```
+
+Here we choose the route 31011->31011 which has `nrow(data_single_route)` rides which we considered enough data points for us to check the linear assumptions.
+
+```{r}
+fit1 <- lm(duration ~ days_since_Jan1_2010, data_single_route)
+par(mfrow=c(2,2))
+plot(fit1)
+```
+
+```{r}
+fit2 <- lm(log(duration) ~ days_since_Jan1_2010, data_single_route)
+par(mfrow=c(2,2))
+plot(fit2)
+```
+
+From the plot we can see that after log transformation on the response variable, the residual plot looks much nicer and the influence of large leverage points gets undermined as few points stick out on the graph.
+
+
+#### Checking linear assumptions for all routes.
+
+Let's next examine all the routes by checking the statictis ncvTest p-value. A significant p value generated by this test means that we should reject the null (the non-constant variance assumption hold).
+
+```{r}
+route_list <- route_more_than_100$route
+ncv_score <- c()
+for (route in route_list){
+  data_group <- data_by_route[data_by_route$route == route,]
+  fit <- lm(duration ~ days_since_Jan1_2010, data=data_group)
+  ncv_score <- append(ncv_score, ncvTest(fit)$p)
+}
+```
+
+
+```{r}
+length(modified_BH(ncv_score, 0.05, 0.5)) / length(route_list)
+```
+
+After BH correction, there is still a large proportion significant p values, meaning that there is evidence showing that the non-constant assumption is violated, so we need to make transformations if we want to apply linear regression. Let's try log transformation on the response variable duration.
+
+```{r}
+ncv_score1 <- c()
+for (route in route_list){
+  data_group <- data_by_route[data_by_route$route == route,]
+  fit <- lm(log(duration) ~ days_since_Jan1_2010, data=data_group)
+  ncv_score1 <- append(ncv_score, ncvTest(fit)$p)
+}
+```
+
+
+```{r}
+length(modified_BH(ncv_score1, 0.05, 0.5)) / length(route_list)
+```
+
+We see that the log transformation slightly improves the the situation but there are still a certain amount of models (55.3%) that do not satisfy the assumption. This means that we might not be able build confidence intervals or other statistical inference on the $\hat \beta$. However, since we believe we've controlled for the multi-collinearity inside the model, the significance on the $\hat \beta$ shouldn't be too much influenced.
+
+
+### Linear regression not controlling any confounders
+
+```{r}
+df_beta <- data.frame(route=rep(NA, length(route_list)), 
+                      estimate=rep(NA, length(route_list)), 
+                      p_value=rep(NA, length(route_list)))
+i = 1
+for (route in route_list){
+  data_group <- data_by_route[data_by_route$route == route,]
+  fit <- lm(log(duration) ~ days_since_Jan1_2010, data=data_group)
+  df_beta[i, 1] <- route
+  df_beta[i, c("estimate", "p_value")] <- c(summary(fit)$coefficients[2,1], summary(fit)$coefficients[2,4])
+  i = i+1
+}
+```
+
+
+Modified BH
+```{r}
+# general modified BH method for each group
+modified_BH = function(P, alpha, gamma){
+    n = length(P)
+    order_index = order(P, decreasing=FALSE)
+    pi_hat = sum(P>gamma)/n/(1-gamma)
+    P[P>gamma] = Inf   # never reject any p > gamma
+    ks = which(P[order_index] <= (1:n)*alpha/n/pi_hat)
+    if(length(ks)==0){
+        return(NULL)
+    }else{
+        k = max(ks)
+        rej_index = order_index[1:k]
+        return(rej_index)
+    }
+}
+```
+
+
+```{r}
+# group adaptive BH function
+group_adaptive_BH = function(P, group_sizes, alpha, gamma) {
+    n = length(P)
+    K = length(group_sizes)
+    rej_index = NULL
+    inx = 1
+    for (k in 1:K) {
+        group_rej_index = modified_BH(P[inx:(inx+group_sizes[k]-1)], alpha, gamma)
+        rej_index = c(rej_index, c(inx:(inx+group_sizes[k]-1))[group_rej_index])
+        inx = inx + group_sizes[k]
+    }
+    return(rej_index)
+}
+```
+
+
+```{r}
+reject_list <- modified_BH(df_beta$p_value, 0.05, 0.5)
+length(reject_list)
+```
+
+Since this is also a multiple testing issue as we're trying to look at how many p values are significant among a large amount of test results, we also need to run modified BH to correct for it. For the regression without any confounders, 1015 results got rejected meaning that after multiple testing correction, 1015 routes shows an increase or decrease in duration over time. This is a large amount since we didn't control for other factors that could've affected the duration.
+
+
+### Linear regression controlling for all confounders (weekday, rush hour, season, membership)
+
+```{r}
+route_list <- route_more_than_100$route
+df_beta_conf <- data.frame(route=rep(NA, length(route_list)), 
+                      estimate=rep(NA, length(route_list)), 
+                      p_value=rep(NA, length(route_list)))
+i = 1
+for (route in route_list){
+  data_group <- data_by_route[data_by_route$route == route,]
+  fit <- lm(log(duration) ~ days_since_Jan1_2010 + 
+              is_weekday + rush_hour + season + member, data=data_group)
+  df_beta_conf[i, 1] <- route
+  df_beta_conf[i, c("estimate", "p_value")] <- 
+    c(summary(fit)$coefficients[2,1], summary(fit)$coefficients[2,4])
+  i = i+1
+}
+```
+
+
+Run modified BH for the regression including all the confounders at the same time and 472 got rejected. This means that after multiple testing correction, controlling for other factors that might influence the duration of that route, 472 appeared to show an increasing / decreasing trend in duration over time. This is a lot less than the previous regression without controlling for any confounders. 
+
+```{r}
+reject_list_conf <- modified_BH(df_beta_conf$p_value, 0.05, 0.5)
+length(reject_list_conf)
+```
+
+There are 394 routes shows significant results taking the intersection of the two.
+```{r}
+length(intersect(reject_list, reject_list_conf))
+```
+
+Comparing this number of routes that shows an significant change on duration over time with the result we get from permutation tests, we get to see that 
